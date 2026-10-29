@@ -1,10 +1,11 @@
-// ==========================================
-// MentraResto Lite - Service Worker (Offline First)
-// ==========================================
+// ===================================================================
+// MentraResto Lite - Professional Service Worker (100% Offline-First)
+// متوافق بالكامل مع نظام حقن المكونات الديناميكية وشاشات النظام
+// ===================================================================
 
-const CACHE_NAME = 'Mentra-RestaurantLite-v5.0'; // تم التحديث لـ v5.0 لفرض التحديث
+const CACHE_NAME = 'Mentra-RestaurantLite-v5.1'; // تم تحديث الإصدار لتطبيق التعديلات فوراً
 
-// الملفات الأساسية التي يجب تحميلها فور تشغيل البرنامج لأول مرة
+// 1. الملفات الأساسية والمكونات المطلوب تخزينها مسبقاً
 const CORE_ASSETS = [
     './',
     './index.html',
@@ -16,7 +17,7 @@ const CORE_ASSETS = [
     
     // --- الصور وملحقات الشرح ---
     './assets/logo.png',
-	'./assets/logo-512.png',
+    './assets/logo-512.png',
     './assets/step1.PNG',
     './assets/step2.PNG',
     './assets/step3.PNG',
@@ -132,86 +133,90 @@ const CDN_URLS = [
     'https://fonts.gstatic.com'     // Google Fonts Files
 ];
 
-// 1. حدث التثبيت (Install Event) - حفظ الملفات الأساسية
+// 2. مرحلة التثبيت (Install) - تخزين آمن دون توقف عند خطأ
 self.addEventListener('install', (event) => {
-    self.skipWaiting(); // تفعيل النسخة الجديدة فوراً لعدم تعليق المستخدم على النسخة القديمة
     event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            console.log('📦 [Service Worker] Caching Core Assets (App Shell)...');
-            // نستخدم allSettled لتجنب توقف التثبيت بالكامل إذا كان هناك ملف واحد مفقود
-            return Promise.allSettled(
-                CORE_ASSETS.map(url => 
-                    cache.add(url).catch(err => console.warn(`⚠️ لم يتم العثور على (قد لا يؤثر على العمل): ${url}`))
-                )
-            );
+        caches.open(CACHE_NAME).then(async (cache) => {
+            console.log('[SW] جاري تهيئة التخزين المؤقت لتطبيق المطعم...');
+            
+            // جلب كل الملفات مع منع الاعتماد على كاش المتصفح القديم
+            const cachePromises = CORE_ASSETS.map(async (url) => {
+                try {
+                    const request = new Request(url, { cache: 'reload' });
+                    const response = await fetch(request);
+                    if (response.ok) {
+                        return await cache.put(url, response);
+                    }
+                } catch (err) {
+                    console.warn(`[SW] تخطي الملف لعدم توفره حالياً: ${url}`);
+                }
+            });
+
+            await Promise.allSettled(cachePromises);
+            console.log('[SW] تم تثبيت الملفات بنجاح، النظام جاهز للعمل أوفلاين 100%.');
         })
     );
+    self.skipWaiting();
 });
 
-// 2. حدث التفعيل (Activate Event) - مسح الكاش القديم
+// 3. مرحلة التنشيط (Activate) - مسح الكاش القديم فوراً والسيطرة
 self.addEventListener('activate', (event) => {
     event.waitUntil(
-        caches.keys().then((cacheNames) => {
+        caches.keys().then((keys) => {
             return Promise.all(
-                cacheNames.map((cacheName) => {
-                    if (cacheName !== CACHE_NAME) {
-                        console.log('🗑️ [Service Worker] Deleting old cache:', cacheName);
-                        return caches.delete(cacheName);
+                keys.map((key) => {
+                    if (key !== CACHE_NAME) {
+                        console.log(`[SW] حذف كاش قديم: ${key}`);
+                        return caches.delete(key);
                     }
                 })
             );
-        }).then(() => self.clients.claim()) // للسيطرة على كل الصفحات المفتوحة فوراً
+        }).then(() => self.clients.claim())
     );
 });
 
-// 3. حدث جلب البيانات (Fetch Event) - المنطق الذكي للعمل Offline
+// 4. مرحلة اعتراض الطلبات (Fetch) - أوفلاين فوري + تحديث صامت
 self.addEventListener('fetch', (event) => {
-    // أ) تخطي الطلبات غير المدعومة مثل إضافات المتصفح أو روابط الـ blob التي ينشئها Babel
-    if (!event.request.url.startsWith('http')) {
-        return;
-    }
+    const request = event.request;
 
-    const requestUrl = event.request.url;
+    // تجاهل الطلبات التي ليست GET أو لا تبدأ بـ http (مثل إضافات Chrome)
+    if (request.method !== 'GET' || !request.url.startsWith('http')) return;
 
-    // ب) إذا كان الطلب من مكتبة خارجية (CDN) - FontAwesome, Google Fonts
-    if (CDN_URLS.some(cdn => requestUrl.includes(cdn))) {
-        event.respondWith(
-            caches.match(event.request).then((cachedResponse) => {
-                if (cachedResponse) return cachedResponse; // إرجاعها من الكاش إذا وجدت
-                
-                return fetch(event.request).then((networkResponse) => {
-                    return caches.open(CACHE_NAME).then((cache) => {
-                        cache.put(event.request, networkResponse.clone());
-                        return networkResponse;
-                    });
-                }).catch(() => {
-                    console.warn('❌ [Service Worker] Network failed for CDN:', requestUrl);
-                });
-            })
-        );
-        return;
-    }
+    const requestUrl = request.url;
+    const isCDN = CDN_URLS.some(cdn => requestUrl.includes(cdn));
 
-    // ج) إذا كان الطلب لملفات النظام المحلية (HTML, JS React, CSS, PNG)
-    // استراتيجية: Stale-While-Revalidate (عرض الكاش الفوري، مع تحديثه في الخلفية إذا وجد إنترنت)
     event.respondWith(
-        caches.match(event.request).then((cachedResponse) => {
+        // ignoreSearch: true أمر حيوي جداً لتجاوز بارامترات Babel و React الديناميكية
+        caches.match(request, { ignoreSearch: true }).then((cachedResponse) => {
             
-            const fetchPromise = fetch(event.request).then((networkResponse) => {
-                // التأكد من أن الاستجابة صالحة قبل تخزينها
-                if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+            // أ) إذا وُجد الملف بالكاش: إرجاعه فوراً وتحديثه بالخلفية
+            if (cachedResponse) {
+                // تحديث صامت في الخلفية إن وجد إنترنت
+                fetch(request).then((networkResponse) => {
+                    if (networkResponse && networkResponse.status === 200) {
+                        caches.open(CACHE_NAME).then((cache) => {
+                            cache.put(request, networkResponse.clone());
+                        });
+                    }
+                }).catch(() => { /* المستخدم أوفلاين، لا داعي لعمل شيء */ });
+
+                return cachedResponse;
+            }
+
+            // ب) إذا لم يوجد الملف بالكاش: جلبه من الشبكة وتخزينه
+            return fetch(request).then((networkResponse) => {
+                // حفظ الرد إذا كان ناجحاً (أو إذا كان من نوع opaque للـ CDNs)
+                if (networkResponse && (networkResponse.status === 200 || (isCDN && networkResponse.type === 'opaque'))) {
+                    const responseToCache = networkResponse.clone();
                     caches.open(CACHE_NAME).then((cache) => {
-                        cache.put(event.request, networkResponse.clone());
+                        cache.put(request, responseToCache);
                     });
                 }
                 return networkResponse;
-            }).catch(() => {
-                // إذا لم يوجد إنترنت، لا تفعل شيئاً (يتم الاعتماد على الكاش)
-                console.log('📶 [Service Worker] You are Offline. Serving from cache:', requestUrl);
+            }).catch((error) => {
+                console.warn('[SW] طلب فشل وأنت أوفلاين:', requestUrl);
+                throw error;
             });
-
-            // إرجاع الملف من الكاش (السرعة الفائقة) أو انتظار تحميله من الشبكة
-            return cachedResponse || fetchPromise;
         })
     );
 });
