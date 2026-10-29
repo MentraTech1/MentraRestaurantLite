@@ -16,7 +16,7 @@ const CORE_ASSETS = [
     
     // --- الصور وملحقات الشرح ---
     './assets/logo.png',
-	'./assets/logo-192.png',
+	'./assets/logo-512.png',
     './assets/step1.PNG',
     './assets/step2.PNG',
     './assets/step3.PNG',

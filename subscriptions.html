@@ -231,54 +231,69 @@
                 } catch (err) { setError(err.message || "حدث خطأ غير متوقع"); setLoading(false); }
             };
 
-            // 🔐 دالة استعادة الحساب بمفتاح الأمان (Security Key Recovery)
-            const handleRecoverPassword = async (e) => {
-                e.preventDefault();
-                setLoading(true); setError(''); setSuccessMsg('');
-                try {
-                    const targetDb = activeTab === 'recover' && selectedSavedUser ? selectedSavedUser.dbName : selectedDbForLogin;
-                    if (!targetDb) throw new Error("يرجى اختيار المطعم أولاً");
-
-                    await window.initRestaurantDB(targetDb);
-                    const user = await window.db.users.where('phone').equals(recoveryData.phone.trim()).first();
-
-                    if (!user) throw new Error("رقم الهاتف هذا غير مسجل في المطعم المحدد");
-
-                    const cleanInputKey = recoveryData.securityKey.trim().toUpperCase();
-                    const cleanSavedKey = (user.security_key || '').trim().toUpperCase();
-
-                    if (!cleanSavedKey || cleanSavedKey !== cleanInputKey) {
-                        throw new Error("مفتاح الأمان غير صحيح أو لم يتم تعيين مفتاح أمان لهذا الحساب");
-                    }
-
-                    // تحديث كلمة المرور في الداتابيز المحلية مباشرة
-                    await window.db.users.update(user.id, { password: recoveryData.newPassword });
-
-                    setSuccessMsg("تم تعيين كلمة المرور الجديدة بنجاح! جاري تسجيل الدخول...");
-                    
-                    // تسجيل الدخول التلقائي فوراً
-                    const restaurant = await window.db.restaurant_info.toCollection().first() || { id: 1, restaurant_name: 'المطعم' };
-                    setTimeout(() => {
-                        localStorage.setItem('MentraRestaurant_Session', JSON.stringify({
-                            user_id: user.id, restaurant_id: restaurant.id, name: user.name, role: user.role, restaurant_name: restaurant.restaurant_name, dbName: targetDb
-                        }));
-                        localStorage.setItem('MentraRestaurant_LastUserID', user.id);
-                        window.location.replace('dashboard.html');
-                    }, 1200);
-
-                } catch (err) {
-                    setError(err.message || "حدث خطأ أثناء استعادة الحساب");
-                    setLoading(false);
-                }
-            };
-
+            // تجهيز بيانات الاستعادة عند الضغط على "نسيت كلمة المرور"
             const openRecovery = () => {
                 setError(''); setSuccessMsg('');
-                if (selectedSavedUser) {
+                // التأكد من تزامن قاعدة البيانات المختارة مع الحساب الذي يطلب الاستعادة
+                if (activeTab === 'fast-login' && selectedSavedUser) {
                     setRecoveryData({ ...recoveryData, phone: selectedSavedUser.phone });
+                    setSelectedDbForLogin(selectedSavedUser.dbName);
+                } else if (activeTab === 'login') {
+                    setRecoveryData({ ...recoveryData, phone: formData.phone });
                 }
                 setActiveTab('recover');
             };
+
+            // 🔐 دالة استعادة الحساب بمفتاح الأمان (Security Key Recovery)
+const handleRecoverPassword = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError(''); setSuccessMsg('');
+    try {
+        const targetDb = selectedDbForLogin; 
+        if (!targetDb) throw new Error("يرجى اختيار المطعم أولاً");
+
+        await window.initRestaurantDB(targetDb);
+        const user = await window.db.users.where('phone').equals(recoveryData.phone.trim()).first();
+
+        if (!user) throw new Error("رقم الهاتف هذا غير مسجل في المطعم المحدد");
+
+        const cleanInputKey = recoveryData.securityKey.trim().toUpperCase();
+        const cleanSavedKey = (user.security_key || '').trim().toUpperCase();
+
+        if (!cleanSavedKey || cleanSavedKey !== cleanInputKey) {
+            throw new Error("مفتاح الأمان غير صحيح أو لم يتم تعيين مفتاح أمان لهذا الحساب");
+        }
+
+        const newPass = recoveryData.newPassword; 
+        if(!newPass) throw new Error("يرجى إدخال كلمة المرور الجديدة");
+
+        // 🔥 الإصلاح هنا: تشفير كلمة المرور بـ btoa قبل الحفظ
+        const hashedNewPass = btoa(newPass);
+
+        // تحديث كلمة المرور في قاعدة البيانات بالنسخة المشفرة
+        const updatedCount = await window.db.users.where('phone').equals(user.phone).modify({ password: hashedNewPass });
+        
+        if(updatedCount === 0) {
+            throw new Error("عفواً، فشل تحديث كلمة المرور في قاعدة البيانات.");
+        }
+
+        setSuccessMsg("تم تعيين كلمة المرور الجديدة بنجاح! جاري تسجيل الدخول...");
+        
+        // تسجيل الدخول التلقائي فوراً بعد النجاح
+        const restaurant = await window.db.restaurant_info.toCollection().first() || { id: 1, restaurant_name: 'المطعم' };
+        setTimeout(() => {
+            localStorage.setItem('MentraRestaurant_Session', JSON.stringify({
+                user_id: user.id, restaurant_id: restaurant.id, name: user.name, role: user.role, restaurant_name: restaurant.restaurant_name, dbName: targetDb
+            }));
+            localStorage.setItem('MentraRestaurant_LastUserID', user.id);
+            window.location.replace('dashboard.html');
+        }, 1200);
+
+    } catch (err) {
+        setError(err.message || "حدث خطأ أثناء استعادة الحساب");
+        setLoading(false);
+    }
+};
 
             if (isChecking) { 
                 return (
