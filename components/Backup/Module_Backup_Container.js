@@ -8,6 +8,7 @@ window.Module_Backup_Container = function(props) {
 
     const [isLoading, setIsLoading] = useState(false);
     const [loadingText, setLoadingText] = useState("");
+    const [progress, setProgress] = useState(null);
     const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
     const [dbStats, setDbStats] = useState({
@@ -22,6 +23,7 @@ window.Module_Backup_Container = function(props) {
     const fileInputRef = useRef(null);
     const dbName = window.db.name;
 
+    // جلب الإحصائيات بسلاسة
     useEffect(() => {
         const analyzeDatabase = async () => {
             try {
@@ -30,10 +32,10 @@ window.Module_Backup_Container = function(props) {
                 const itemsCount = await window.db.menu_items.count();
                 const usersCount = await window.db.users.count();
 
+                // جمع الإيرادات
                 let income = 0;
-                await window.db.accounting.where('type').equals('income').each(record => {
-                    income += record.amount;
-                });
+                const incomeRecords = await window.db.accounting.where('type').equals('income').toArray();
+                income = incomeRecords.reduce((sum, record) => sum + (record.amount || 0), 0);
 
                 setDbStats(prev => ({
                     ...prev,
@@ -47,62 +49,86 @@ window.Module_Backup_Container = function(props) {
                 console.error("خطأ في تحليل البيانات:", error);
             }
         };
-
         analyzeDatabase();
     }, []);
 
+    // 🚀 خوارزمية التصدير الانسيابية (Lazy Chunked Export)
     const handleExport = async () => {
         setIsLoading(true);
-        setLoadingText("جاري تجميع وضغط البيانات، الرجاء الانتظار...");
+        setProgress(0);
+        setLoadingText("جاري التهيئة لتجميع البيانات...");
 
-        setTimeout(async () => {
-            try {
-                const tables = ['restaurant_info', 'users', 'categories', 'menu_items', 'tables', 'orders', 'order_items', 'accounting'];
+        try {
+            // جلب كافة أسماء الجداول ديناميكياً لضمان عدم نسيان أي جدول (شامل المخازن الجديدة)
+            const actualTables = window.db.tables.map(t => t.name);
+            const chunks = [];
+            
+            // رأس الملف
+            chunks.push(`{"mentra_signature":"MENTRA_RESTAURANT_LITE_V1","dbName":"${dbName}","restaurant_name":"${dbStats.restaurantName}","generated_at":"${new Date().toISOString()}","data":{`);
+
+            for (let i = 0; i < actualTables.length; i++) {
+                const tableName = actualTables[i];
+                setLoadingText(`جاري سحب بيانات: ${tableName}`);
+                setProgress(0);
                 
-                let backupData = {
-                    mentra_signature: "MENTRA_RESTAURANT_LITE_V1",
-                    dbName: dbName,
-                    restaurant_name: dbStats.restaurantName,
-                    generated_at: new Date().toISOString(),
-                    data: {}
-                };
+                chunks.push(`"${tableName}":[`);
+                const table = window.db.table(tableName);
+                const totalRecords = await table.count();
+                let processed = 0;
+                const BATCH_SIZE = 1500; // حجم الدفعة لعدم استهلاك الرام
 
-                for (let table of tables) {
-                    backupData.data[table] = await window.db.table(table).toArray();
+                for (let offset = 0; offset < totalRecords; offset += BATCH_SIZE) {
+                    const batch = await table.offset(offset).limit(BATCH_SIZE).toArray();
+                    const batchStrings = batch.map(record => JSON.stringify(record));
+                    chunks.push(batchStrings.join(","));
+
+                    processed += batch.length;
+                    if (processed < totalRecords) chunks.push(",");
+
+                    // إعطاء المتصفح فرصة لتحديث واجهة المستخدم (Yielding)
+                    setProgress(Math.round((processed / totalRecords) * 100));
+                    await new Promise(resolve => setTimeout(resolve, 10));
                 }
 
-                const jsonString = JSON.stringify(backupData);
-                const blob = new Blob([jsonString], { type: "application/json" });
-                const downloadUrl = URL.createObjectURL(blob);
-
-                const a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = `Mentra_Backup_${dbStats.restaurantName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.json`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(downloadUrl); 
-
-                const nowStr = new Date().toLocaleString('ar-EG');
-                localStorage.setItem(`Mentra_${dbName}_LastBackup`, nowStr);
-                setDbStats(prev => ({ ...prev, lastBackup: nowStr }));
-
-                showToast("تم استخراج النسخة الاحتياطية بنجاح!", "success");
-            } catch (error) {
-                console.error("Export Error:", error);
-                showToast("حدث خطأ أثناء استخراج البيانات", "error");
-            } finally {
-                setIsLoading(false);
+                chunks.push(`]`);
+                if (i < actualTables.length - 1) chunks.push(`,`);
             }
-        }, 100);
+            chunks.push(`}}`);
+
+            setLoadingText("جاري ضغط وبناء الملف النهائي...");
+            setProgress(100);
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            // تكوين الملف وتحميله
+            const blob = new Blob(chunks, { type: "application/json" });
+            const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = `Mentra_Backup_${dbStats.restaurantName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(downloadUrl); 
+
+            const nowStr = new Date().toLocaleString('ar-EG');
+            localStorage.setItem(`Mentra_${dbName}_LastBackup`, nowStr);
+            setDbStats(prev => ({ ...prev, lastBackup: nowStr }));
+
+            showToast("تم استخراج النسخة الاحتياطية بنجاح!", "success");
+        } catch (error) {
+            console.error("Export Error:", error);
+            showToast("حدث خطأ أثناء استخراج البيانات", "error");
+        } finally {
+            setIsLoading(false);
+            setProgress(null);
+        }
     };
 
-    // فتح نافذة التأكيد الشيك بدلاً من confirm()
     const triggerImport = () => {
         setConfirmModal({
             isOpen: true,
-            title: "تنبيه خطير قبل الاستعادة",
-            message: "استعادة النسخة الاحتياطية ستقوم بمسح كافة الفواتير والمنيو الموجودة حالياً وإحلال بيانات الملف بدلاً منها. هل أنت متأكد؟",
+            title: "تحذير أمني هام!",
+            message: "استعادة النسخة الاحتياطية ستقوم بمسح كافة البيانات (الفواتير، المنيو، المخازن) وإحلال بيانات الملف بدلاً منها. هل أنت متأكد؟",
             onConfirm: () => fileInputRef.current.click()
         });
     };
@@ -112,7 +138,8 @@ window.Module_Backup_Container = function(props) {
         if (!file) return;
 
         setIsLoading(true);
-        setLoadingText("جاري قراءة واستعادة البيانات، لا تقم بإغلاق المتصفح...");
+        setProgress(null);
+        setLoadingText("جاري قراءة الملف وتحليل السجلات...");
 
         const reader = new FileReader();
         
@@ -125,12 +152,11 @@ window.Module_Backup_Container = function(props) {
                 }
                 
                 if (importedJson.dbName !== dbName) {
-                    // فتح نافذة تأكيد إضافية في حال كان الملف لمطعم آخر
                     setIsLoading(false);
                     setConfirmModal({
                         isOpen: true,
                         title: "اختلاف في اسم المطعم!",
-                        message: `هذا الملف يخص مطعم (${importedJson.restaurant_name}) بينما أنت حالياً في مطعم (${dbStats.restaurantName}). هل أنت متأكد من رغبتك في إحلال هذه البيانات؟`,
+                        message: `هذا الملف يخص مطعم (${importedJson.restaurant_name}) وأنت حالياً في مطعم (${dbStats.restaurantName}). المتابعة ستؤدي لتبديل المطعم! هل توافق؟`,
                         onConfirm: () => performDatabaseRestore(importedJson)
                     });
                     return;
@@ -140,8 +166,9 @@ window.Module_Backup_Container = function(props) {
 
             } catch (error) {
                 console.error("Import Error:", error);
-                showToast(error.message || "حدث خطأ: الملف تالف أو غير مدعوم", "error");
+                showToast(error.message || "حدث خطأ: الملف تالف أو حجمه ضخم جداً", "error");
                 setIsLoading(false);
+                setProgress(null);
             }
             event.target.value = '';
         };
@@ -153,29 +180,46 @@ window.Module_Backup_Container = function(props) {
         reader.readAsText(file);
     };
 
+    // 🚀 خوارزمية الاستيراد الانسيابية (Lazy Chunked Import)
     const performDatabaseRestore = async (importedJson) => {
         setIsLoading(true);
-        setLoadingText("جاري معالجة الجداول وتحديث السجلات...");
         try {
             const tablesToRestore = Object.keys(importedJson.data);
             const actualTables = window.db.tables.map(t => t.name);
 
-            await window.db.transaction('rw', actualTables, async () => {
-                for (let tableName of tablesToRestore) {
-                    if (actualTables.includes(tableName)) {
-                        await window.db.table(tableName).clear();
-                        if (importedJson.data[tableName].length > 0) {
-                            await window.db.table(tableName).bulkAdd(importedJson.data[tableName]);
-                        }
+            // نقوم بالعملية خارج transaction واحد كبير لتجنب تجميد الذاكرة (Memory Lock)
+            for (let tableName of tablesToRestore) {
+                if (actualTables.includes(tableName)) {
+                    const records = importedJson.data[tableName];
+                    if (!records || records.length === 0) continue;
+
+                    setLoadingText(`جاري استعادة: ${tableName}`);
+                    setProgress(0);
+
+                    const table = window.db.table(tableName);
+                    await table.clear(); // تفريغ الجدول القديم
+
+                    const BATCH_SIZE = 1500;
+                    for (let i = 0; i < records.length; i += BATCH_SIZE) {
+                        const batch = records.slice(i, i + BATCH_SIZE);
+                        await table.bulkAdd(batch); // إدراج دفعة
+
+                        setProgress(Math.round(((i + batch.length) / records.length) * 100));
+                        await new Promise(resolve => setTimeout(resolve, 10)); // Yielding
                     }
                 }
-            });
+            }
 
-            showToast("تمت استعادة البيانات بنجاح! سيتم إعادة تشغيل النظام.", "success");
+            setProgress(100);
+            setLoadingText("تمت الاستعادة بنجاح! جاري إعادة تهيئة النظام...");
+            
+            showToast("تمت استعادة البيانات بنجاح!", "success");
             setTimeout(() => window.location.reload(), 2000);
         } catch (error) {
-            showToast("فشل إحلال الجداول", "error");
+            console.error("Restore Error", error);
+            showToast("فشل إحلال الجداول، تأكد من سلامة الملف", "error");
             setIsLoading(false);
+            setProgress(null);
         }
     };
 
@@ -192,7 +236,8 @@ window.Module_Backup_Container = function(props) {
             <BackupProAd />
 
             {/* النوافذ المساعدة */}
-            <BackupLoaderOverlay isLoading={isLoading} loadingText={loadingText} />
+            <BackupLoaderOverlay isLoading={isLoading} loadingText={loadingText} progress={progress} />
+            
             <BackupConfirmModal 
                 isOpen={confirmModal.isOpen} 
                 onClose={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))} 

@@ -53,6 +53,10 @@
         
         .fade-up { animation: fadeUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* حركة القائمة المنسدلة */
+        .animate-dropdown { animation: dropIn 0.2s ease-out forwards; transform-origin: top; }
+        @keyframes dropIn { from { opacity: 0; transform: scaleY(0.9); } to { opacity: 1; transform: scaleY(1); } }
     </style>
 </head>
 <body class="flex items-center justify-center p-3 sm:p-6 selection:bg-[#EA580C] selection:text-white relative">
@@ -115,10 +119,12 @@
             const [availableRestaurants, setAvailableRestaurants] = useState([]);
             const [selectedDbForLogin, setSelectedDbForLogin] = useState('');
 
-            // الدخول السريع
+            // الدخول السريع (التحديث الجديد: Live Search State)
             const [savedUsers, setSavedUsers] = useState([]);
             const [selectedSavedUser, setSelectedSavedUser] = useState(null);
             const [fastLoginPassword, setFastLoginPassword] = useState('');
+            const [searchQuery, setSearchQuery] = useState('');
+            const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
             // تسجيل جديد
             const [formData, setFormData] = useState({
@@ -231,10 +237,8 @@
                 } catch (err) { setError(err.message || "حدث خطأ غير متوقع"); setLoading(false); }
             };
 
-            // تجهيز بيانات الاستعادة عند الضغط على "نسيت كلمة المرور"
             const openRecovery = () => {
                 setError(''); setSuccessMsg('');
-                // التأكد من تزامن قاعدة البيانات المختارة مع الحساب الذي يطلب الاستعادة
                 if (activeTab === 'fast-login' && selectedSavedUser) {
                     setRecoveryData({ ...recoveryData, phone: selectedSavedUser.phone });
                     setSelectedDbForLogin(selectedSavedUser.dbName);
@@ -244,56 +248,58 @@
                 setActiveTab('recover');
             };
 
-            // 🔐 دالة استعادة الحساب بمفتاح الأمان (Security Key Recovery)
-const handleRecoverPassword = async (e) => {
-    e.preventDefault();
-    setLoading(true); setError(''); setSuccessMsg('');
-    try {
-        const targetDb = selectedDbForLogin; 
-        if (!targetDb) throw new Error("يرجى اختيار المطعم أولاً");
+            const handleRecoverPassword = async (e) => {
+                e.preventDefault();
+                setLoading(true); setError(''); setSuccessMsg('');
+                try {
+                    const targetDb = selectedDbForLogin; 
+                    if (!targetDb) throw new Error("يرجى اختيار المطعم أولاً");
 
-        await window.initRestaurantDB(targetDb);
-        const user = await window.db.users.where('phone').equals(recoveryData.phone.trim()).first();
+                    await window.initRestaurantDB(targetDb);
+                    const user = await window.db.users.where('phone').equals(recoveryData.phone.trim()).first();
 
-        if (!user) throw new Error("رقم الهاتف هذا غير مسجل في المطعم المحدد");
+                    if (!user) throw new Error("رقم الهاتف هذا غير مسجل في المطعم المحدد");
 
-        const cleanInputKey = recoveryData.securityKey.trim().toUpperCase();
-        const cleanSavedKey = (user.security_key || '').trim().toUpperCase();
+                    const cleanInputKey = recoveryData.securityKey.trim().toUpperCase();
+                    const cleanSavedKey = (user.security_key || '').trim().toUpperCase();
 
-        if (!cleanSavedKey || cleanSavedKey !== cleanInputKey) {
-            throw new Error("مفتاح الأمان غير صحيح أو لم يتم تعيين مفتاح أمان لهذا الحساب");
-        }
+                    if (!cleanSavedKey || cleanSavedKey !== cleanInputKey) {
+                        throw new Error("مفتاح الأمان غير صحيح أو لم يتم تعيين مفتاح أمان لهذا الحساب");
+                    }
 
-        const newPass = recoveryData.newPassword; 
-        if(!newPass) throw new Error("يرجى إدخال كلمة المرور الجديدة");
+                    const newPass = recoveryData.newPassword; 
+                    if(!newPass) throw new Error("يرجى إدخال كلمة المرور الجديدة");
 
-        // 🔥 الإصلاح هنا: تشفير كلمة المرور بـ btoa قبل الحفظ
-        const hashedNewPass = btoa(newPass);
+                    const hashedNewPass = btoa(newPass);
 
-        // تحديث كلمة المرور في قاعدة البيانات بالنسخة المشفرة
-        const updatedCount = await window.db.users.where('phone').equals(user.phone).modify({ password: hashedNewPass });
-        
-        if(updatedCount === 0) {
-            throw new Error("عفواً، فشل تحديث كلمة المرور في قاعدة البيانات.");
-        }
+                    const updatedCount = await window.db.users.where('phone').equals(user.phone).modify({ password: hashedNewPass });
+                    
+                    if(updatedCount === 0) {
+                        throw new Error("عفواً، فشل تحديث كلمة المرور في قاعدة البيانات.");
+                    }
 
-        setSuccessMsg("تم تعيين كلمة المرور الجديدة بنجاح! جاري تسجيل الدخول...");
-        
-        // تسجيل الدخول التلقائي فوراً بعد النجاح
-        const restaurant = await window.db.restaurant_info.toCollection().first() || { id: 1, restaurant_name: 'المطعم' };
-        setTimeout(() => {
-            localStorage.setItem('MentraRestaurant_Session', JSON.stringify({
-                user_id: user.id, restaurant_id: restaurant.id, name: user.name, role: user.role, restaurant_name: restaurant.restaurant_name, dbName: targetDb
-            }));
-            localStorage.setItem('MentraRestaurant_LastUserID', user.id);
-            window.location.replace('dashboard.html');
-        }, 1200);
+                    setSuccessMsg("تم تعيين كلمة المرور الجديدة بنجاح! جاري تسجيل الدخول...");
+                    
+                    const restaurant = await window.db.restaurant_info.toCollection().first() || { id: 1, restaurant_name: 'المطعم' };
+                    setTimeout(() => {
+                        localStorage.setItem('MentraRestaurant_Session', JSON.stringify({
+                            user_id: user.id, restaurant_id: restaurant.id, name: user.name, role: user.role, restaurant_name: restaurant.restaurant_name, dbName: targetDb
+                        }));
+                        localStorage.setItem('MentraRestaurant_LastUserID', user.id);
+                        window.location.replace('dashboard.html');
+                    }, 1200);
 
-    } catch (err) {
-        setError(err.message || "حدث خطأ أثناء استعادة الحساب");
-        setLoading(false);
-    }
-};
+                } catch (err) {
+                    setError(err.message || "حدث خطأ أثناء استعادة الحساب");
+                    setLoading(false);
+                }
+            };
+
+            // تصفية المستخدمين للبحث الحي
+            const filteredUsers = savedUsers.filter(u => 
+                u.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                u.restaurant_name.toLowerCase().includes(searchQuery.toLowerCase())
+            );
 
             if (isChecking) { 
                 return (
@@ -318,11 +324,11 @@ const handleRecoverPassword = async (e) => {
                         <p className="text-xs font-bold text-slate-400 mt-0.5">نظام إدارة نقاط البيع والمطاعم الذكي (Offline)</p>
                     </div>
 
-                    <div className="bg-white rounded-[2rem] shadow-2xl overflow-hidden relative border border-slate-100/80">
+                    <div className="bg-white rounded-[2rem] shadow-2xl overflow-visible relative border border-slate-100/80 z-20">
                         
                         {/* أزرار التبديل العلوية */}
                         {activeTab !== 'fast-login' && activeTab !== 'recover' && (
-                            <div className="flex p-1.5 bg-slate-100/80 border-b border-slate-100">
+                            <div className="flex p-1.5 bg-slate-100/80 border-b border-slate-100 rounded-t-[2rem]">
                                 <button 
                                     onClick={() => { setActiveTab('login'); setError(''); setSuccessMsg(''); }} 
                                     className={`flex-1 py-3 text-xs sm:text-sm font-black rounded-xl transition-all ${activeTab === 'login' ? 'bg-white text-[#EA580C] shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
@@ -338,7 +344,7 @@ const handleRecoverPassword = async (e) => {
                             </div>
                         )}
 
-                        <div className="p-5 sm:p-7">
+                        <div className="p-5 sm:p-7 relative">
                             
                             {/* رسائل التنبيه والخطأ */}
                             {error && (
@@ -355,33 +361,94 @@ const handleRecoverPassword = async (e) => {
                                 </div>
                             )}
 
-                            {/* 1. الدخول السريع (Fast Login) */}
+                            {/* 1. الدخول السريع (Fast Login with Live Search) */}
                             {activeTab === 'fast-login' && selectedSavedUser && (
                                 <form onSubmit={handleFastLogin} className="text-center fade-up space-y-4">
-                                    {savedUsers.length > 1 && (
-                                        <div className="flex gap-2.5 overflow-x-auto hide-scrollbar pb-2 justify-start sm:justify-center snap-x">
-                                            {savedUsers.map(u => (
-                                                <button 
-                                                    key={u.id + u.dbName} 
-                                                    type="button" 
-                                                    onClick={() => { setSelectedSavedUser(u); setFastLoginPassword(''); setError(''); }} 
-                                                    className={`snap-center p-2 rounded-2xl border-2 transition-all shrink-0 w-[72px] sm:w-20 flex flex-col items-center ${selectedSavedUser.dbName === u.dbName && selectedSavedUser.id === u.id ? 'border-[#EA580C] bg-orange-50/60 scale-105 shadow-sm' : 'border-slate-100 bg-white opacity-60 hover:opacity-100'}`}
-                                                >
-                                                    <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-black text-sm mb-1 transition-colors ${selectedSavedUser.dbName === u.dbName && selectedSavedUser.id === u.id ? 'bg-[#EA580C] text-white shadow-md' : 'bg-slate-200 text-slate-500'}`}>
-                                                        {u.name.charAt(0)}
-                                                    </div>
-                                                    <p className="text-[9px] font-bold text-slate-700 truncate w-full px-0.5">{u.name.split(' ')[0]}</p>
-                                                    <p className="text-[8px] font-bold text-slate-400 truncate w-full mt-0.5">{u.restaurant_name}</p>
-                                                </button>
-                                            ))}
+                                    
+                                    {/* مكون البحث الحي واختيار الحساب */}
+                                    <div className="relative mb-6 z-50 text-right">
+                                        
+                                        {/* زر إظهار القائمة / الحساب المختار */}
+                                        <div 
+                                            className="input-field flex items-center justify-between cursor-pointer bg-white pr-4 hover:border-orange-300 transition-colors"
+                                            onClick={() => { setIsDropdownOpen(!isDropdownOpen); setSearchQuery(''); }}
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#EA580C] to-[#F97316] text-white flex items-center justify-center text-sm font-black shadow-md">
+                                                    {selectedSavedUser.name.charAt(0)}
+                                                </div>
+                                                <div className="flex flex-col text-right leading-tight">
+                                                    <span className="text-sm font-black text-slate-800">{selectedSavedUser.name}</span>
+                                                    <span className="text-[10px] font-bold text-[#EA580C]"><i className="fas fa-store ml-1"></i>{selectedSavedUser.restaurant_name}</span>
+                                                </div>
+                                            </div>
+                                            <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center shrink-0">
+                                                <i className={`fas fa-chevron-down text-slate-400 text-xs transition-transform duration-300 ${isDropdownOpen ? 'rotate-180 text-[#EA580C]' : ''}`}></i>
+                                            </div>
                                         </div>
-                                    )}
 
-                                    <div className="pt-1 mb-2">
-                                        <h2 className="text-xl font-black text-slate-800">مرحباً، {selectedSavedUser.name.split(' ')[0]}</h2>
-                                        <p className="text-xs font-bold text-[#EA580C] mt-1"><i className="fas fa-store ml-1"></i> {selectedSavedUser.restaurant_name}</p>
+                                        {/* الخلفية الشفافة لإغلاق القائمة عند الضغط خارجها */}
+                                        {isDropdownOpen && (
+                                            <div className="fixed inset-0 z-40" onClick={() => setIsDropdownOpen(false)}></div>
+                                        )}
+
+                                        {/* القائمة المنسدلة للبحث */}
+                                        {isDropdownOpen && (
+                                            <div className="absolute top-[110%] left-0 w-full bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden z-50 animate-dropdown flex flex-col">
+                                                
+                                                {/* مربع البحث */}
+                                                <div className="p-3 border-b border-slate-100 bg-slate-50 sticky top-0 z-10">
+                                                    <div className="relative">
+                                                        <input 
+                                                            type="text" 
+                                                            className="w-full bg-white border border-slate-200 rounded-xl py-2.5 pr-10 pl-3 text-xs font-bold focus:outline-none focus:border-[#EA580C] focus:ring-2 focus:ring-orange-500/10 transition-all text-slate-700 placeholder:text-slate-400"
+                                                            placeholder="ابحث بالاسم أو المطعم..." 
+                                                            value={searchQuery}
+                                                            onChange={(e) => setSearchQuery(e.target.value)}
+                                                            autoFocus
+                                                        />
+                                                        <i className="fas fa-search absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                                                    </div>
+                                                </div>
+
+                                                {/* نتائج البحث */}
+                                                <div className="max-h-56 overflow-y-auto hide-scrollbar">
+                                                    {filteredUsers.length > 0 ? (
+                                                        filteredUsers.map(u => (
+                                                            <div 
+                                                                key={u.id + u.dbName} 
+                                                                className={`p-3 border-b border-slate-50 last:border-0 cursor-pointer transition-colors flex items-center gap-3 ${selectedSavedUser.id === u.id && selectedSavedUser.dbName === u.dbName ? 'bg-orange-50' : 'hover:bg-slate-50'}`}
+                                                                onClick={() => {
+                                                                    setSelectedSavedUser(u);
+                                                                    setIsDropdownOpen(false);
+                                                                    setFastLoginPassword('');
+                                                                    setError('');
+                                                                }}
+                                                            >
+                                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${selectedSavedUser.id === u.id && selectedSavedUser.dbName === u.dbName ? 'bg-[#EA580C] text-white' : 'bg-slate-200 text-slate-600'}`}>
+                                                                    {u.name.charAt(0)}
+                                                                </div>
+                                                                <div className="flex flex-col flex-1 overflow-hidden">
+                                                                    <span className="text-xs font-black text-slate-800 truncate">{u.name}</span>
+                                                                    <span className="text-[10px] font-bold text-slate-500 truncate">{u.restaurant_name}</span>
+                                                                </div>
+                                                                {selectedSavedUser.id === u.id && selectedSavedUser.dbName === u.dbName && (
+                                                                    <i className="fas fa-check-circle text-[#EA580C] text-sm shrink-0"></i>
+                                                                )}
+                                                            </div>
+                                                        ))
+                                                    ) : (
+                                                        <div className="p-6 text-center text-slate-400 flex flex-col items-center justify-center gap-2">
+                                                            <i className="fas fa-folder-open text-2xl opacity-50"></i>
+                                                            <span className="text-xs font-bold">لا توجد حسابات مطابقة للبحث</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
 
+                                    {/* حقل كلمة المرور */}
                                     <div className="input-group">
                                         <input 
                                             type={showPassword ? "text" : "password"} 
@@ -416,7 +483,7 @@ const handleRecoverPassword = async (e) => {
                                     </button>
 
                                     <button type="button" onClick={() => setActiveTab('login')} className="w-full text-slate-400 hover:text-slate-700 font-bold text-xs pt-1 transition-colors">
-                                        الدخول بحساب أو مطعم مختلف
+                                        الدخول برقم هاتف أو مطعم غير محفوظ
                                     </button>
                                 </form>
                             )}
@@ -492,7 +559,7 @@ const handleRecoverPassword = async (e) => {
 
                                     {savedUsers.length > 0 && (
                                         <button type="button" onClick={() => setActiveTab('fast-login')} className="w-full text-center text-slate-500 hover:text-slate-800 font-bold text-xs pt-1 transition-colors">
-                                            <i className="fas fa-users text-[10px] ml-1"></i> العودة لقائمة الحسابات المحفوظة
+                                            <i className="fas fa-bolt text-[10px] text-amber-500 ml-1"></i> العودة للدخول السريع
                                         </button>
                                     )}
                                 </form>
@@ -538,7 +605,7 @@ const handleRecoverPassword = async (e) => {
                                 </form>
                             )}
 
-                            {/* 4. استعادة الحساب بمفتاح الأمان (Security Key Recovery Tab) */}
+                            {/* 4. استعادة الحساب بمفتاح الأمان */}
                             {activeTab === 'recover' && (
                                 <form onSubmit={handleRecoverPassword} className="space-y-3.5 fade-up">
                                     <div className="text-center mb-3">
